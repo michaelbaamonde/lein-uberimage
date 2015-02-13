@@ -12,20 +12,33 @@
    [leiningen.core.main :as main]
    [leiningen.jar :refer [get-jar-filename]]
    [leiningen.uberjar :refer [uberjar]]
+   [leiningen.ring.uberwar :refer [uberwar]]
    [taoensso.timbre :as timbre :refer [merge-config! str-println]])
   (:import
    [java.net URL]))
 
+(def artifacts
+  "Default artifact file names and commands."
+  {:uberjar
+   {:name "uberjar.jar"
+    :cmd ["/usr/bin/java" "-jar" "uberjar.jar" ]
+    :build-fn uberjar}
+   :uberwar
+   {:name "/usr/local/tomcat/webapps/uberwar.war"
+    :cmd ["catalina.sh" "run"]
+    :build-fn uberwar}})
+
 (defn dockerfile
   "Return a dockerfile string"
-  [{:keys [cmd files base-image instructions]}]
-  (let [cmd (or cmd ["/usr/bin/java" "-jar" "/uberjar.jar"])
+  [{:keys [cmd files base-image instructions artifact]}]
+  (let [artifact-name (get-in artifacts [artifact :name])
+        cmd (or cmd (get-in artifacts [artifact :cmd]))
         cmd (if (sequential? cmd) cmd [cmd])
         cmd-str (->> (for [s cmd] (str "\"" s "\""))
                      (string/join ","))]
     (->> (concat [(str "FROM " base-image)]
                  instructions
-                 ["ADD uberjar.jar uberjar.jar"
+                 [(str "ADD  " artifact-name " " artifact-name)
                   (str "CMD [" cmd-str "]")]
                  (for [[tar-path local-path] files]
                    (str "ADD " tar-path " " tar-path)))
@@ -38,13 +51,13 @@
   [^java.io.OutputStream tar-output-stream
    ^java.io.OutputStream piped-output-stream
    standalone-filename
-   {:keys [files] :as options}]
+   {:keys [files artifact] :as options}]
   (with-open [piped-output-stream piped-output-stream
               tar-output-stream tar-output-stream]
     (tar-entry-from-string
      tar-output-stream "Dockerfile" (dockerfile options))
     (tar-entry-from-file
-     tar-output-stream "uberjar.jar" (file standalone-filename))
+     tar-output-stream (get-in artifacts [artifact :name]) (file standalone-filename))
     (doseq [[tar-path local-path] files]
       (tar-entry-from-file tar-output-stream tar-path (file local-path)))))
 
@@ -82,7 +95,15 @@
            :verify (not= tls-verify "0")})
         (main/warn "Ignoring DOCKER_HOST: unsupported protocol")))))
 
-
+(defn build-artifact [f project]
+  (try
+    (f project)
+    (catch Exception e
+      (when main/*debug*
+        (.printStackTrace e))
+      (throw
+       (ex-info "Uberimage aborting because build failed:"
+                {} e)))))
 
 (def cli-options
   (let [env-endpoint (endpoint-from-env)]
@@ -141,6 +162,7 @@
                   (= (System/getenv "DOCKER_AUTH") "identity") :jwk-path
                   (System/getenv "DOCKER_CERT_PATH") :cert-path)
         options (merge {:base-image "pallet/java"}
+                       {:artifact :uberjar}
                        (:uberimage project)
                        options)]
     (when errors
@@ -153,14 +175,8 @@
     (configure-logging)
     (let [{:keys [piped-input-stream piped-output-stream tar-output-stream]}
           (tar-output-stream)
-          jarfile (try
-                    (uberjar project)
-                    (catch Exception e
-                      (when main/*debug*
-                        (.printStackTrace e))
-                      (throw
-                       (ex-info "Uberimage aborting because uberjar failed:"
-                                {} e))))
+          build-fn (get-in artifacts [(:artifact options) :build-fn])
+          jarfile (build-artifact build-fn project)
           [ks-path keystore] (condp = use-cert
                                :cert-path (key-store
                                            (:cert-path
@@ -181,6 +197,8 @@
                                 keystore (.toCharArray ks-pw))]
           (add-cert ks-path keystore cert)))
       (main/info "Using jar file" jarfile)
+      (main/info "Using Dockerfile" (dockerfile options))
+      (main/info "Using options" options)
       (when (or (nil? jarfile) (not (.exists (file jarfile))))
         (throw (ex-info "Jar file does not exist" {:exit-code 1})))
       (thread

@@ -8,5 +8,6 @@
   :dependencies [[com.palletops/clj-docker "0.2.0"]
                  [org.clojure/tools.cli "0.3.1"]
                  [net.oauth.core/oauth "20100527"]
-                 [clj-time "0.8.0"]]
+                 [clj-time "0.8.0"]
+                 [lein-ring "0.9.1"]]
   :global-vars {*warn-on-reflection* true})
